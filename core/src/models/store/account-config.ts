@@ -3,12 +3,15 @@ export {};
 
 const sharedState = require('./shared-state');
 const { assertEmailClaimHour } = require('../../utils/hour-of-day');
-const { normalizeRanchSetting, migrateRanchMarketAutomation } = require('../../config/ranch-automation');
+// 集市兑换迁移只在写入路径跑；条目归一统一走 shared-state.normalizeAutomationValue
+// （它内部已委托 normalizeRanchSetting 处理 ranch 键，无需在此单独引入）。
+const { migrateRanchMarketAutomation } = require('../../config/ranch-automation');
 const { readKnownFriendGidsCache, writeKnownFriendGidsCache } = require('./gid-cache');
 
 const {
     globalConfig,
     normalizeAccountConfig,
+    normalizeAutomationValue,
     cloneAccountConfig,
     normalizeFertilizerMode,
     normalizeFertilizerLandTypes,
@@ -122,7 +125,6 @@ function getConfigSnapshot(accountId?: unknown): AccountConfig & { ui: typeof gl
         autoAcceptHarvestStealEnabled: !!cfg.autoAcceptHarvestStealEnabled,
         autoAcceptHarvestStealHarvest: cfg.autoAcceptHarvestStealHarvest,
         autoAcceptHarvestStealSteal: cfg.autoAcceptHarvestStealSteal,
-        instantHarvest: !!cfg.instantHarvest,
         ui: { ...globalConfig.ui },
     } as any;
 }
@@ -145,17 +147,10 @@ function applyConfigSnapshot(snapshot: Record<string, any> | undefined, options:
     if (cfg.automation && typeof cfg.automation === 'object') {
         for (const [k, v] of Object.entries(migrateRanchMarketAutomation(cfg.automation))) {
             if ((next.automation as any)[k] === undefined) continue;
-            if (k === 'fertilizer') {
-                next.automation.fertilizer = normalizeFertilizerMode(v, next.automation.fertilizer);
-            } else if (k === 'fertilizer_land_types') {
-                (next.automation as any)[k] = normalizeFertilizerLandTypes(v, next.automation.fertilizer_land_types);
-            } else if (k.startsWith('ranch_')) {
-                (next.automation as any)[k] = normalizeRanchSetting(k, v);
-            } else if (k === 'fertilizer_smart_seconds') {
-                (next.automation as any)[k] = Math.max(30, Math.min(3600, Number(v) || 300));
-            } else {
-                (next.automation as any)[k] = !!v;
-            }
+            // 归一规则全在 shared-state.normalizeAutomationValue 里，两处写入路径共用一份：
+            // 这里以前自己写了个 `!!v` 的兜底，把雇佣班次/特长这类数字选法折成 true，
+            // 下次读回来就落回默认档（2026-10-19 用户报「选 24 小时刷新就变回去」）。
+            (next.automation as any)[k] = normalizeAutomationValue(k, v, (next.automation as any)[k]);
         }
     }
 
@@ -293,10 +288,6 @@ function applyConfigSnapshot(snapshot: Record<string, any> | undefined, options:
             cfg.autoAcceptHarvestStealSteal,
             next.autoAcceptHarvestStealSteal,
         );
-    }
-
-    if (cfg.instantHarvest !== undefined && cfg.instantHarvest !== null) {
-        next.instantHarvest = !!cfg.instantHarvest;
     }
 
     setAccountConfigSnapshot(accountId, next, persist);
@@ -502,10 +493,6 @@ function getAutoAcceptHarvestStealSteal(accountId?: unknown): number {
     return normalizeAutoAcceptHarvestStealSteal(getAccountConfigSnapshot(accountId).autoAcceptHarvestStealSteal);
 }
 
-function getInstantHarvest(accountId?: unknown): boolean {
-    return !!getAccountConfigSnapshot(accountId).instantHarvest;
-}
-
 function getPlantBlacklist(accountId?: unknown): number[] {
     return [...(getAccountConfigSnapshot(accountId).plantBlacklist || [])];
 }
@@ -565,7 +552,6 @@ module.exports = {
     getAutoAcceptHarvestStealEnabled,
     getAutoAcceptHarvestStealHarvest,
     getAutoAcceptHarvestStealSteal,
-    getInstantHarvest,
     getPlantBlacklist,
     setPlantBlacklist,
     getDefaultAccountConfig,

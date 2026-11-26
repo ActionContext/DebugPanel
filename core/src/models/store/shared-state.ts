@@ -78,6 +78,19 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
         fertilizer_smart_seconds: 300,
         skip_own_weed_bug: true,
         show_manual_fertilizer: true,
+        // 默认只做「领种子 + 分享」这两件零风险的事；自动卖薯要动别人的铺子额度，
+        // 默认也开，但好友都收满时默认兜底卖给自己，避免一批蜜薯烂在背包里。
+        yishu_claim_seed: true,
+        yishu_share: true,
+        yishu_auto_sell: true,
+        yishu_claim_commission: true,
+        yishu_sell_fallback_own: true,
+        yishu_scan_friend_limit: 50,
+        // 默认两小时比价一次：cmd 92 逐个查铺子比较重，间隔拉长可以少打网关。
+        yishu_scan_interval_minutes: 120,
+        yishu_sell_min_count: 1,
+        // 默认 14:00 开始卖：这个点好友大多已分享、暴击加成齐全，报价更高；空串 = 不限时段（用户可显式选）。
+        yishu_sell_after_time: '14:00',
     },
     plantingStrategy: 'max_exp',
     preferredSeedId: 0,
@@ -130,7 +143,6 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     autoAcceptHarvestStealEnabled: true,
     autoAcceptHarvestStealHarvest: 8,
     autoAcceptHarvestStealSteal: 1,
-    instantHarvest: false,
 };
 
 const ALLOWED_AUTOMATION_KEYS: Set<string> = new Set(Object.keys(DEFAULT_ACCOUNT_CONFIG.automation));
@@ -345,12 +357,64 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
             : DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealEnabled,
         autoAcceptHarvestStealHarvest: normalizeAutoAcceptHarvestStealHarvest(base.autoAcceptHarvestStealHarvest, DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealHarvest),
         autoAcceptHarvestStealSteal: normalizeAutoAcceptHarvestStealSteal(base.autoAcceptHarvestStealSteal, DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealSteal),
-        instantHarvest: !!base.instantHarvest,
     };
 }
 
 function normalizeFertilizerMode(value: unknown, fallback: FertilizerMode): FertilizerMode {
     return FERTILIZER_MODES.has(value as FertilizerMode) ? value as FertilizerMode : fallback;
+}
+
+/**
+ * 卖薯开始时间 "HH:MM"。空串 / 非法值一律当「不限时段」，避免把界面输错的东西
+ * 变成「永远不卖」——闸门只推迟卖薯，绝不该让它彻底停下。
+ */
+function normalizeSellAfterTime(value: unknown): string {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const match = /^(\d{1,2})\s*[:：]\s*(\d{1,2})$/.exec(raw);
+    if (!match) return '';
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '';
+    const clampedHour = Math.max(0, Math.min(23, hour));
+    const clampedMinute = Math.max(0, Math.min(59, minute));
+    return `${String(clampedHour).padStart(2, '0')}:${String(clampedMinute).padStart(2, '0')}`;
+}
+
+/**
+ * 单个 automation 键的归一。两处写入路径（`normalizeAccountConfig` 读账号存档、
+ * `applyConfigSnapshot` 保存设置页）必须共用这一份，否则选法配置会被另一处 `!!v` 布尔化：
+ * 2026-10-19 的 bug 就是雇佣班次/特长在保存时被折成 true，再读回来落回默认档。
+ * `current` 是该键归一前的现值，非法值一律回到它而不是硬编码默认。
+ */
+function normalizeAutomationValue(key: string, value: unknown, current: any): any {
+    if (key === 'fertilizer') {
+        return normalizeFertilizerMode(value, current);
+    }
+    if (key === 'fertilizer_land_types') {
+        return normalizeFertilizerLandTypes(value, current);
+    }
+    if (key.startsWith('ranch_')) {
+        return normalizeRanchSetting(key, value);
+    }
+    if (key === 'fertilizer_smart_seconds') {
+        return Math.max(30, Math.min(3600, Number(value) || 300));
+    }
+    // 以薯换福的数值项：默认值是数字，这里必须显式夹取，否则会被下面的 `!!value` 折成 true。
+    if (key === 'yishu_scan_friend_limit') {
+        return Math.max(1, Math.min(200, Number.parseInt(String(value), 10) || 50));
+    }
+    if (key === 'yishu_scan_interval_minutes') {
+        return Math.max(5, Math.min(720, Number.parseInt(String(value), 10) || 120));
+    }
+    if (key === 'yishu_sell_min_count') {
+        return Math.max(1, Math.min(10000, Number.parseInt(String(value), 10) || 1));
+    }
+    // "HH:MM" 是字符串项，不夹取就会被折成 true，卖薯闸门直接失效。
+    if (key === 'yishu_sell_after_time') {
+        return normalizeSellAfterTime(value);
+    }
+    return !!value;
 }
 
 function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accountFallbackConfig): AccountConfig {
@@ -364,17 +428,7 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
         }
         for (const [k, v] of Object.entries(migrateRanchMarketAutomation(src.automation))) {
             if (!ALLOWED_AUTOMATION_KEYS.has(k)) continue;
-            if (k === 'fertilizer') {
-                cfg.automation.fertilizer = normalizeFertilizerMode(v, cfg.automation.fertilizer);
-            } else if (k === 'fertilizer_land_types') {
-                cfg.automation.fertilizer_land_types = normalizeFertilizerLandTypes(v, cfg.automation.fertilizer_land_types);
-            } else if (k.startsWith('ranch_')) {
-                (cfg.automation as any)[k] = normalizeRanchSetting(k, v);
-            } else if (k === 'fertilizer_smart_seconds') {
-                cfg.automation.fertilizer_smart_seconds = Math.max(30, Math.min(3600, Number(v) || 300));
-            } else {
-                (cfg.automation as any)[k] = !!v;
-            }
+            (cfg.automation as any)[k] = normalizeAutomationValue(k, v, (cfg.automation as any)[k]);
         }
     }
 
@@ -508,10 +562,6 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
 
     if (src.autoAcceptHarvestStealSteal !== undefined && src.autoAcceptHarvestStealSteal !== null) {
         cfg.autoAcceptHarvestStealSteal = normalizeAutoAcceptHarvestStealSteal(src.autoAcceptHarvestStealSteal, cfg.autoAcceptHarvestStealSteal);
-    }
-
-    if (src.instantHarvest !== undefined && src.instantHarvest !== null) {
-        cfg.instantHarvest = !!src.instantHarvest;
     }
 
     return cfg;
@@ -678,6 +728,7 @@ module.exports = {
     normalizeAutoAcceptHarvestStealHarvest,
     normalizeAutoAcceptHarvestStealSteal,
     normalizeAccountConfig,
+    normalizeAutomationValue,
     cloneAccountConfig,
     resolveAccountId,
     loadGlobalConfig,
