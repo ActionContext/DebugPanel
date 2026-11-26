@@ -308,7 +308,6 @@ const localStrategySettings = ref({
   stealDelaySeconds: 0,
   plantOrderRandom: false,
   plantDelaySeconds: 0,
-  instantHarvest: false,
   intervals: { farmMin: 2, farmMax: 5, friendMin: 10, friendMax: 15 },
   friendQuietHours: { enabled: false, start: '23:00', end: '07:00', continueFarm: true },
 })
@@ -781,7 +780,6 @@ function syncLocalStrategySettings() {
       stealDelaySeconds: settings.value.stealDelaySeconds ?? 0,
       plantOrderRandom: !!settings.value.plantOrderRandom,
       plantDelaySeconds: settings.value.plantDelaySeconds ?? 0,
-      instantHarvest: !!settings.value.instantHarvest,
       intervals: settings.value.intervals,
       friendQuietHours: {
         enabled: false,
@@ -920,6 +918,9 @@ const localAutomationSettings = ref({
     fertilizer_land_types: [...defaultFertilizerLandTypes],
     fertilizer_smart_seconds: 300,
     show_manual_fertilizer: true,
+    yishu_scan_friend_limit: 50,
+    yishu_scan_interval_minutes: 120,
+    yishu_sell_after_time: '14:00',
   },
   fertilizerBuyOrganicCount: 10,
   fertilizerBuyOrganicThresholdHours: 10,
@@ -977,6 +978,9 @@ function syncLocalAutomationSettings() {
         fertilizer_land_types: [...allFertilizerLandTypes],
         fertilizer_smart_seconds: 300,
         show_manual_fertilizer: true,
+        yishu_scan_friend_limit: 50,
+        yishu_scan_interval_minutes: 120,
+        yishu_sell_after_time: '14:00',
       }
     }
     else {
@@ -1010,6 +1014,9 @@ function syncLocalAutomationSettings() {
         fertilizer_land_types: [...allFertilizerLandTypes],
         fertilizer_smart_seconds: 300,
         show_manual_fertilizer: true,
+        yishu_scan_friend_limit: 50,
+        yishu_scan_interval_minutes: 120,
+        yishu_sell_after_time: '14:00',
       }
       localAutomationSettings.value.automation = {
         ...defaults,
@@ -2130,21 +2137,6 @@ onBeforeUnmount(() => {
                   min="0"
                   max="300"
                 />
-              </div>
-            </div>
-
-            <div class="border-t pt-3 space-y-3 dark:border-gray-700">
-              <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
-                秒收获
-              </h4>
-              <div class="border border-gray-200 rounded-lg bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                <BaseSwitch
-                  v-model="localStrategySettings.instantHarvest"
-                  label="秒收获"
-                />
-                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  开启后，作物成熟前 2 秒开始，每 200-300ms 高频触发收菜，直到收干净为止；下一茬继续检测。
-                </p>
               </div>
             </div>
 
