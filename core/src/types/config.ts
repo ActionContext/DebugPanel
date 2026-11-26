@@ -101,6 +101,10 @@ export interface AccountConfig {
   autoAcceptHarvestStealEnabled: boolean;
   autoAcceptHarvestStealHarvest: number;
   autoAcceptHarvestStealSteal: number;
+  /** 秒收获：作物成熟前 1 秒预唤醒，成熟瞬间立即收获；收干净后停止，下一茬继续检测。 */
+  instantHarvest: boolean;
+  /** 秒偷菜：好友作物成熟前 1 秒预唤醒，成熟瞬间立即偷取；偷干净后停止，下一茬继续检测。 */
+  instantSteal: boolean;
 }
 
 export interface OfflineReminderChannel {
