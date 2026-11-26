@@ -308,6 +308,8 @@ export interface SettingsState {
   autoAcceptHarvestStealEnabled: boolean
   autoAcceptHarvestStealHarvest: number
   autoAcceptHarvestStealSteal: number
+  instantHarvest: boolean
+  instantSteal: boolean
 }
 
 type SaveableSettingsKey
@@ -334,6 +336,8 @@ type SaveableSettingsKey
     | 'autoAcceptHarvestStealEnabled'
     | 'autoAcceptHarvestStealHarvest'
     | 'autoAcceptHarvestStealSteal'
+    | 'instantHarvest'
+    | 'instantSteal'
 
 export type SettingsSavePayload = Partial<Pick<SettingsState, SaveableSettingsKey>>
 
@@ -361,6 +365,8 @@ const SAVEABLE_SETTINGS_KEYS: SaveableSettingsKey[] = [
   'autoAcceptHarvestStealEnabled',
   'autoAcceptHarvestStealHarvest',
   'autoAcceptHarvestStealSteal',
+  'instantHarvest',
+  'instantSteal',
 ]
 
 function createDefaultSettings(): SettingsState {
@@ -390,6 +396,8 @@ function createDefaultSettings(): SettingsState {
     autoAcceptHarvestStealEnabled: true,
     autoAcceptHarvestStealHarvest: 8,
     autoAcceptHarvestStealSteal: 1,
+    instantHarvest: false,
+    instantSteal: false,
   }
 }
 
@@ -450,6 +458,8 @@ export const useSettingStore = defineStore('setting', () => {
       autoAcceptHarvestStealEnabled: data.autoAcceptHarvestStealEnabled ?? defaults.autoAcceptHarvestStealEnabled,
       autoAcceptHarvestStealHarvest: data.autoAcceptHarvestStealHarvest ?? defaults.autoAcceptHarvestStealHarvest,
       autoAcceptHarvestStealSteal: data.autoAcceptHarvestStealSteal ?? defaults.autoAcceptHarvestStealSteal,
+      instantHarvest: data.instantHarvest ?? defaults.instantHarvest,
+      instantSteal: data.instantSteal ?? defaults.instantSteal,
     }
   }
 
