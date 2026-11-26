@@ -309,7 +309,6 @@ const localStrategySettings = ref({
   plantOrderRandom: false,
   plantDelaySeconds: 0,
   instantHarvest: false,
-  instantSteal: false,
   intervals: { farmMin: 2, farmMax: 5, friendMin: 10, friendMax: 15 },
   friendQuietHours: { enabled: false, start: '23:00', end: '07:00', continueFarm: true },
 })
@@ -783,7 +782,6 @@ function syncLocalStrategySettings() {
       plantOrderRandom: !!settings.value.plantOrderRandom,
       plantDelaySeconds: settings.value.plantDelaySeconds ?? 0,
       instantHarvest: !!settings.value.instantHarvest,
-      instantSteal: !!settings.value.instantSteal,
       intervals: settings.value.intervals,
       friendQuietHours: {
         enabled: false,
@@ -2137,27 +2135,16 @@ onBeforeUnmount(() => {
 
             <div class="border-t pt-3 space-y-3 dark:border-gray-700">
               <h4 class="text-sm text-gray-700 font-medium dark:text-gray-300">
-                秒收秒偷
+                秒收获
               </h4>
-              <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div class="border border-gray-200 rounded-lg bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                  <BaseSwitch
-                    v-model="localStrategySettings.instantHarvest"
-                    label="秒收获"
-                  />
-                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    开启后，作物成熟前 1 秒预唤醒，成熟瞬间立即收菜；收干净后停止，下一茬继续检测。
-                  </p>
-                </div>
-                <div class="border border-gray-200 rounded-lg bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
-                  <BaseSwitch
-                    v-model="localStrategySettings.instantSteal"
-                    label="秒偷菜"
-                  />
-                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    开启后，好友作物成熟前 1 秒预唤醒，成熟瞬间立即偷菜；偷干净后停止，下一茬继续检测。需要同时开启好友偷菜。
-                  </p>
-                </div>
+              <div class="border border-gray-200 rounded-lg bg-gray-50/70 p-3 dark:border-gray-700 dark:bg-gray-800/40">
+                <BaseSwitch
+                  v-model="localStrategySettings.instantHarvest"
+                  label="秒收获"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  开启后，作物成熟前 2 秒开始，每 200-300ms 高频触发收菜，直到收干净为止；下一茬继续检测。
+                </p>
               </div>
             </div>
 
