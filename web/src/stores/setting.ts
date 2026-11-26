@@ -68,6 +68,16 @@ export interface AutomationConfig {
   mystery_shop_purchase_notify?: boolean
   skip_own_weed_bug?: boolean
   show_manual_fertilizer?: boolean
+  yishu_claim_seed?: boolean
+  yishu_share?: boolean
+  yishu_auto_sell?: boolean
+  yishu_claim_commission?: boolean
+  yishu_sell_fallback_own?: boolean
+  yishu_scan_friend_limit?: number
+  yishu_scan_interval_minutes?: number
+  yishu_sell_min_count?: number
+  /** 到点之后才开始卖薯（"HH:MM"，空串 = 不限）。 */
+  yishu_sell_after_time?: string
 }
 
 export interface IntervalsConfig {
@@ -308,7 +318,6 @@ export interface SettingsState {
   autoAcceptHarvestStealEnabled: boolean
   autoAcceptHarvestStealHarvest: number
   autoAcceptHarvestStealSteal: number
-  instantHarvest: boolean
 }
 
 type SaveableSettingsKey
@@ -335,7 +344,6 @@ type SaveableSettingsKey
     | 'autoAcceptHarvestStealEnabled'
     | 'autoAcceptHarvestStealHarvest'
     | 'autoAcceptHarvestStealSteal'
-    | 'instantHarvest'
 
 export type SettingsSavePayload = Partial<Pick<SettingsState, SaveableSettingsKey>>
 
@@ -363,7 +371,6 @@ const SAVEABLE_SETTINGS_KEYS: SaveableSettingsKey[] = [
   'autoAcceptHarvestStealEnabled',
   'autoAcceptHarvestStealHarvest',
   'autoAcceptHarvestStealSteal',
-  'instantHarvest',
 ]
 
 function createDefaultSettings(): SettingsState {
@@ -393,7 +400,6 @@ function createDefaultSettings(): SettingsState {
     autoAcceptHarvestStealEnabled: true,
     autoAcceptHarvestStealHarvest: 8,
     autoAcceptHarvestStealSteal: 1,
-    instantHarvest: false,
   }
 }
 
@@ -454,7 +460,6 @@ export const useSettingStore = defineStore('setting', () => {
       autoAcceptHarvestStealEnabled: data.autoAcceptHarvestStealEnabled ?? defaults.autoAcceptHarvestStealEnabled,
       autoAcceptHarvestStealHarvest: data.autoAcceptHarvestStealHarvest ?? defaults.autoAcceptHarvestStealHarvest,
       autoAcceptHarvestStealSteal: data.autoAcceptHarvestStealSteal ?? defaults.autoAcceptHarvestStealSteal,
-      instantHarvest: data.instantHarvest ?? defaults.instantHarvest,
     }
   }
 
