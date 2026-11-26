@@ -329,7 +329,6 @@ function createDataProvider(options: DataProviderOptions) {
                 'autoAcceptHarvestStealHarvest',
                 'autoAcceptHarvestStealSteal',
                 'instantHarvest',
-                'instantSteal',
             ]) {
                 copyIfPresent(key);
             }
