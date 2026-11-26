@@ -16,6 +16,7 @@ const {
     isAutomationOn,
     getFriendBlacklist,
     getStealDelaySeconds,
+    getInstantSteal,
     getAutoAcceptFriendMinLevel,
     getAutoAcceptRequireOwnLevel,
     getAutoAcceptHarvestStealEnabled,
@@ -42,6 +43,7 @@ const {
 } = require('./gid-manager');
 const {
     visitFriend,
+    doFriendOperation,
     inFriendQuietHours,
     cacheFriendsListFromReply,
     clearFriendsListCache,
@@ -74,6 +76,19 @@ const BAD_SHARED_LIMIT_ID: number = 10003;
 const BAD_DAILY_STATE_VERSION: number = 1;
 // 一轮最多对多少位「没可偷也没可帮」的好友做纯捣乱访问（按等级降序）
 const MAX_BAD_ONLY_VISITS_PER_ROUND: number = 20;
+
+// ============ 秒偷菜：好友作物成熟前 1 秒预唤醒 ============
+// 好友列表摘要（gamepb.friendpb.Plant）自带 ripe_time_sec（成熟倒计时，秒），
+// 不用进农场就能知道每位好友下一茬作物什么时候熟；steal_plant_num > 0 表示
+// 已经有可偷的，那种交给本轮正常巡查。这里只盯“还没熟、快熟了”的好友。
+// 触发后直接复用手动单好友偷菜 doFriendOperation（进场 → 分析可偷地块 → 偷取
+// → 出售果实 → 离场）。同一茬最多尝试 3 次：提前 1 秒、到点、到点+300ms
+// （到点仍报生长中时补查，与自家成熟唤醒的 +300ms 逻辑一致）；3 次都无可偷
+// （已被别人偷走或对方已收获）就移出监视，等下一轮巡查重新登记下一茬。
+const friendRipeWatch = new Map<number, { at: number; name: string; attempts: number }>();
+let instantStealAt = Infinity;
+const INSTANT_STEAL_MAX_ATTEMPTS: number = 3;
+const INSTANT_STEAL_MAX_TARGETS_PER_WAKE: number = 5;
 
 const OP_NAMES: Record<number, string> = {
     10001: '浇水',
@@ -339,6 +354,9 @@ export async function checkFriends(options: CheckFriendsOptions = {}): Promise<b
 
         const blacklist: Set<number> = new Set(getFriendBlacklist(accountId));
 
+        // 秒偷菜：按好友列表摘要里的成熟倒计时登记监视。
+        rememberFriendRipe(friends, blacklist);
+
         // 经验满不帮时，本轮只帮当天缓存已确认是护主犬的好友；缓存没结论的交给每日宠物同步补齐。
         const stopWhenExpLimit: boolean = !!isAutomationOn('friend_help_exp_limit') && !ignoreExpLimit;
         const protectDogBypassEnabled: boolean = !!isAutomationOn('friend_help_protect_dog_ignore_exp_limit');
@@ -474,6 +492,120 @@ export async function checkFriends(options: CheckFriendsOptions = {}): Promise<b
         return false;
     } finally {
         isCheckingFriends = false;
+        updateInstantStealWake();
+    }
+}
+
+function rememberFriendRipe(friends: any[], blacklist: Set<number>): void {
+    if (!getInstantSteal()) {
+        if (friendRipeWatch.size > 0) friendRipeWatch.clear();
+        return;
+    }
+    const seen = new Set<number>();
+    const now = Date.now();
+    const myGid = toNum(getUserState().gid);
+    for (const friend of Array.isArray(friends) ? friends : []) {
+        const gid = toNum(friend && friend.gid);
+        if (!gid || gid === myGid) continue;
+        seen.add(gid);
+        if (blacklist.has(gid)) {
+            friendRipeWatch.delete(gid);
+            continue;
+        }
+        const plant = friend && friend.plant;
+        const stealNum = toNum(plant && plant.steal_plant_num);
+        const ripeSec = toNum(plant && plant.ripe_time_sec);
+        // 已有可偷的交给本轮正常巡查；没有倒计时（没种作物/已熟透）的不盯。
+        if (stealNum > 0 || !(ripeSec > 0)) {
+            friendRipeWatch.delete(gid);
+            continue;
+        }
+        const at = now + ripeSec * 1000;
+        const prev = friendRipeWatch.get(gid);
+        friendRipeWatch.set(gid, {
+            at,
+            name: String((friend && (friend.remark || friend.name)) || `GID:${gid}`),
+            // 倒计时每轮重算，同一茬的成熟时刻只会漂移 1 秒左右；漂移大了视为新一茬，重置尝试次数。
+            attempts: prev && Math.abs(prev.at - at) < 2000 ? prev.attempts : 0,
+        });
+    }
+    // 本轮名单里已没有的好友移出监视，避免盯着过期数据。
+    for (const gid of [...friendRipeWatch.keys()]) {
+        if (!seen.has(gid)) friendRipeWatch.delete(gid);
+    }
+}
+
+function updateInstantStealWake(): void {
+    friendScheduler.clear('instant_steal_wake');
+    instantStealAt = Infinity;
+    if (!friendLoopRunning || !isAutomationOn('friend') || !isAutomationOn('friend_steal') || !getInstantSteal()) return;
+    if (inFriendQuietHours()) return;
+    let earliest = Infinity;
+    for (const entry of friendRipeWatch.values()) earliest = Math.min(earliest, entry.at);
+    if (!Number.isFinite(earliest) || earliest <= Date.now()) return;
+    const now = Date.now();
+    // 提前 1 秒预唤醒；已进入 1 秒窗口则直接按成熟时刻触发。
+    const fireAt = earliest - 1000 > now ? earliest - 1000 : earliest;
+    if (fireAt <= now) return;
+    instantStealAt = fireAt;
+    const generation = friendLoopGeneration;
+    friendScheduler.setTimeoutTask('instant_steal_wake', fireAt - now, async () => {
+        instantStealAt = Infinity;
+        if (generation !== friendLoopGeneration) return;
+        try {
+            await runExclusiveAutomationTask('instant_steal_wake', () => onInstantStealWake(generation), { detached: true });
+        } finally {
+            if (generation === friendLoopGeneration) updateInstantStealWake();
+        }
+    });
+}
+
+async function onInstantStealWake(generation: number): Promise<void> {
+    if (generation !== friendLoopGeneration || !friendLoopRunning) return;
+    if (!isAutomationOn('friend') || !isAutomationOn('friend_steal') || !getInstantSteal()) return;
+    if (inFriendQuietHours()) return;
+    const now = Date.now();
+    // 本次到点的（进入 1 秒窗口或已过成熟点）先处理最早的几位，其余留给下一次唤醒。
+    const due = [...friendRipeWatch.entries()]
+        .filter(([, entry]) => entry.at - 1000 <= now)
+        .sort((a, b) => a[1].at - b[1].at)
+        .slice(0, INSTANT_STEAL_MAX_TARGETS_PER_WAKE);
+    for (const [gid, entry] of due) {
+        if (generation !== friendLoopGeneration) return;
+        if (!isAutomationOn('friend') || !isAutomationOn('friend_steal') || !getInstantSteal()) return;
+        if (inFriendQuietHours()) return;
+        if (!canScanFriend(gid)) {
+            friendRipeWatch.delete(gid);
+            continue;
+        }
+        entry.attempts += 1;
+        let stolen = 0;
+        try {
+            const res = await doFriendOperation(gid, 'steal', false);
+            stolen = toNum(res && res.count);
+        } catch (e: any) {
+            logWarn('好友', `秒偷菜失败 ${entry.name}: ${e.message}`, {
+                module: 'friend',
+                event: '秒偷菜',
+                result: 'error',
+                friendName: entry.name,
+                friendGid: gid,
+                error: e.message,
+            });
+        }
+        if (stolen > 0) {
+            // 偷到了：这茬结束，移出监视；下一轮巡查会重新登记下一茬。
+            friendRipeWatch.delete(gid);
+            continue;
+        }
+        if (entry.attempts >= INSTANT_STEAL_MAX_ATTEMPTS) {
+            // 已试过“提前 1 秒 / 到点 / 到点+300ms”仍无可偷（被别人先偷了或对方已收获），
+            // 移出监视，等下一轮巡查重新登记。
+            friendRipeWatch.delete(gid);
+            continue;
+        }
+        // 还没熟：保持成熟时刻不变（下次唤醒在到点触发）；到点仍未成熟则顺延 300ms 再试一次。
+        if (now >= entry.at) entry.at = entry.at + 300;
     }
 }
 
@@ -527,6 +659,8 @@ export function stopFriendCheckLoop(): void {
     flushFriendPetCacheNow();
     clearAllInvalidKnownFriendGidCooldowns();
     clearFriendsListCache();
+    friendRipeWatch.clear();
+    instantStealAt = Infinity;
     networkEvents.off('friendApplicationReceived', onFriendApplicationReceived);
     friendScheduler.clearAll();
 }
@@ -534,6 +668,7 @@ export function stopFriendCheckLoop(): void {
 export function refreshFriendCheckLoop(delayMs: number = 200): void {
     if (!friendLoopRunning || externalSchedulerMode) return;
     friendScheduler.setTimeoutTask('friend_check_loop', Math.max(0, delayMs), () => friendCheckLoop());
+    updateInstantStealWake();
 }
 
 // ============ 自动同意好友申请 (微信同玩) ============
