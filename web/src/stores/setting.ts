@@ -309,7 +309,6 @@ export interface SettingsState {
   autoAcceptHarvestStealHarvest: number
   autoAcceptHarvestStealSteal: number
   instantHarvest: boolean
-  instantSteal: boolean
 }
 
 type SaveableSettingsKey
@@ -337,7 +336,6 @@ type SaveableSettingsKey
     | 'autoAcceptHarvestStealHarvest'
     | 'autoAcceptHarvestStealSteal'
     | 'instantHarvest'
-    | 'instantSteal'
 
 export type SettingsSavePayload = Partial<Pick<SettingsState, SaveableSettingsKey>>
 
@@ -366,7 +364,6 @@ const SAVEABLE_SETTINGS_KEYS: SaveableSettingsKey[] = [
   'autoAcceptHarvestStealHarvest',
   'autoAcceptHarvestStealSteal',
   'instantHarvest',
-  'instantSteal',
 ]
 
 function createDefaultSettings(): SettingsState {
@@ -397,7 +394,6 @@ function createDefaultSettings(): SettingsState {
     autoAcceptHarvestStealHarvest: 8,
     autoAcceptHarvestStealSteal: 1,
     instantHarvest: false,
-    instantSteal: false,
   }
 }
 
@@ -459,7 +455,6 @@ export const useSettingStore = defineStore('setting', () => {
       autoAcceptHarvestStealHarvest: data.autoAcceptHarvestStealHarvest ?? defaults.autoAcceptHarvestStealHarvest,
       autoAcceptHarvestStealSteal: data.autoAcceptHarvestStealSteal ?? defaults.autoAcceptHarvestStealSteal,
       instantHarvest: data.instantHarvest ?? defaults.instantHarvest,
-      instantSteal: data.instantSteal ?? defaults.instantSteal,
     }
   }
 
