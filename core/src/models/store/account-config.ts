@@ -123,7 +123,6 @@ function getConfigSnapshot(accountId?: unknown): AccountConfig & { ui: typeof gl
         autoAcceptHarvestStealHarvest: cfg.autoAcceptHarvestStealHarvest,
         autoAcceptHarvestStealSteal: cfg.autoAcceptHarvestStealSteal,
         instantHarvest: !!cfg.instantHarvest,
-        instantSteal: !!cfg.instantSteal,
         ui: { ...globalConfig.ui },
     } as any;
 }
@@ -298,10 +297,6 @@ function applyConfigSnapshot(snapshot: Record<string, any> | undefined, options:
 
     if (cfg.instantHarvest !== undefined && cfg.instantHarvest !== null) {
         next.instantHarvest = !!cfg.instantHarvest;
-    }
-
-    if (cfg.instantSteal !== undefined && cfg.instantSteal !== null) {
-        next.instantSteal = !!cfg.instantSteal;
     }
 
     setAccountConfigSnapshot(accountId, next, persist);
@@ -511,10 +506,6 @@ function getInstantHarvest(accountId?: unknown): boolean {
     return !!getAccountConfigSnapshot(accountId).instantHarvest;
 }
 
-function getInstantSteal(accountId?: unknown): boolean {
-    return !!getAccountConfigSnapshot(accountId).instantSteal;
-}
-
 function getPlantBlacklist(accountId?: unknown): number[] {
     return [...(getAccountConfigSnapshot(accountId).plantBlacklist || [])];
 }
@@ -575,7 +566,6 @@ module.exports = {
     getAutoAcceptHarvestStealHarvest,
     getAutoAcceptHarvestStealSteal,
     getInstantHarvest,
-    getInstantSteal,
     getPlantBlacklist,
     setPlantBlacklist,
     getDefaultAccountConfig,
