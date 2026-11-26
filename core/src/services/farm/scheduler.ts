@@ -5,7 +5,7 @@ export {};
 
 const { CONFIG, PlantPhase } = require('../../config/config');
 const { getPlantById, getItemById } = require('../../config/gameConfig');
-const { isAutomationOn, getAutomation, getFertilizerBuyOrganicCount, getFertilizerBuyOrganicThresholdHours, getFertilizerBuyNormalCount, getFertilizerBuyNormalThresholdHours, getFertilizerBuyCheckIntervalMinutes } = require('../../models/store');
+const { isAutomationOn, getAutomation, getInstantHarvest, getFertilizerBuyOrganicCount, getFertilizerBuyOrganicThresholdHours, getFertilizerBuyNormalCount, getFertilizerBuyNormalThresholdHours, getFertilizerBuyCheckIntervalMinutes } = require('../../models/store');
 const { getUserState, networkEvents } = require('../../utils/network');
 const { toNum, toTimeSec, serverTimeToLocalMs, log, logWarn, randomDelay } = require('../../utils/utils');
 const { runWithRequestClass } = require('../../utils/request-context');
@@ -49,6 +49,8 @@ let pushCheckAt = Infinity;
 let scheduledAt = Infinity;
 let wakeQueued = false;
 let nextOrdinaryPushAt = 0;
+// 秒收获预唤醒的触发时刻（Infinity 表示未安排）。
+let instantHarvestAt = Infinity;
 
 // ============ 农场循环 ============
 
@@ -124,6 +126,38 @@ function updateMaturityWake(): void {
     armFarmWake();
 }
 
+// ============ 秒收获：成熟前 1 秒预唤醒 ============
+// landDeadlines 里已记着每块地的成熟时刻（rememberMaturity 按成熟阶段 begin_time
+// 算出，到点仍报生长中时顺延 300ms）。秒收获开启时，在最早成熟时刻前 1 秒先唤醒
+// 一次做准备，到成熟时刻再唤醒一次立即收菜；收完后该地块的 deadline 消失，
+// 下一次 observeFarmLands 会自动按下一茬的成熟时刻重新安排，进入下一轮检测。
+function updateInstantHarvestWake(): void {
+    farmScheduler.clear('instant_harvest_wake');
+    instantHarvestAt = Infinity;
+    if (!farmLoopRunning || !canContinueFarm(farmLoopGeneration) || !getInstantHarvest()) return;
+    let earliest = Infinity;
+    for (const { at } of landDeadlines.values()) earliest = Math.min(earliest, at);
+    if (!Number.isFinite(earliest) || earliest <= Date.now()) return;
+    const now = Date.now();
+    // 提前 1 秒预唤醒；已进入 1 秒窗口则直接按成熟时刻触发。
+    const fireAt = earliest - 1000 > now ? earliest - 1000 : earliest;
+    if (fireAt <= now) return;
+    instantHarvestAt = fireAt;
+    const generation = farmLoopGeneration;
+    farmScheduler.setTimeoutTask('instant_harvest_wake', fireAt - now, async () => {
+        instantHarvestAt = Infinity;
+        if (generation !== farmLoopGeneration) return;
+        try {
+            await runExclusiveAutomationTask('instant_harvest_wake', async () => {
+                if (!canContinueFarm(generation) || !getInstantHarvest()) return;
+                await checkFarm();
+            }, { detached: true });
+        } finally {
+            if (generation === farmLoopGeneration) updateInstantHarvestWake();
+        }
+    });
+}
+
 function observeFarmLands(lands: any[], full = false): void {
     if (full) {
         landDeadlines.clear();
@@ -137,6 +171,7 @@ function observeFarmLands(lands: any[], full = false): void {
         if (!full) pendingHarvest.delete(toNum(land.id));
     }
     updateMaturityWake();
+    updateInstantHarvestWake();
 }
 
 function schedulePlantContinuation(generation: number, pacing: any, delayMs?: number): void {
@@ -178,6 +213,7 @@ async function checkFarm(): Promise<boolean> {
         isCheckingFarm = false;
         schedulePlantContinuation(generation, pacing);
         armFarmWake();
+        updateInstantHarvestWake();
     }
 }
 
@@ -642,6 +678,7 @@ function stopFarmCheckLoop(): void {
     pendingHarvest.clear();
     lastHarvestAttempt.clear();
     maturityAt = pushCheckAt = scheduledAt = Infinity;
+    instantHarvestAt = Infinity;
     nextOrdinaryPushAt = 0;
     wakeQueued = false;
     farmScheduler.clearAll();
@@ -659,6 +696,7 @@ function refreshFarmCheckLoop(delayMs: number = 200): void {
         pushCheckAt = Infinity;
     }
     updateMaturityWake();
+    updateInstantHarvestWake();
     if (farmScheduler.has('farm_plant_continue')) {
         farmScheduler.clear('farm_plant_continue');
         schedulePlantContinuation(farmLoopGeneration, automaticPlantPacing, delayMs);

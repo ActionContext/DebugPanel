@@ -75,6 +75,12 @@ interface PlantSeedsResult {
 const NORMAL_FERTILIZER_ID: number = 1011;
 const ORGANIC_FERTILIZER_ID: number = 1012;
 
+// 运行日志里红薯（种子 20307）只显示名字，不加种子编号；其它种子保持“名字(编号)”不变。
+function formatSeedLogLabel(name: any, seedId: any): string {
+    const label = String(name || '');
+    return toNum(seedId) === 20307 ? label : `${label}(${toNum(seedId)})`;
+}
+
 function confirmsPlantedFootprint(
     expectedLandIds: Set<number>,
     masterLandId: number,
@@ -311,7 +317,7 @@ async function plantFromBagSeeds(landsToPlant: any[], landTypeById?: Map<number,
         // 拿不到土地类型时按不限制处理，避免整轮种不下去。
         landTypes: landTypeAvailable ? resolveSeedLandTypes(bagSeedLandTypes, seed && seed.seedId) : null,
     }));
-    // log('种植', `背包种子原始: ${normalizedSeeds.map((s: any) => `${s.name}(${s.seedId})x${s.count},lv${s.requiredLevel},size${s.plantSize}`).join('; ')}`, {
+    // log('种植', `背包种子原始: ${normalizedSeeds.map((s: any) => `${formatSeedLogLabel(s.name, s.seedId)}x${s.count},lv${s.requiredLevel},size${s.plantSize}`).join('; ')}`, {
     //     module: 'farm', event: '种植种子', result: 'bag_raw', priority: priorityList, stateLevel,
     // });
 
@@ -333,7 +339,7 @@ async function plantFromBagSeeds(landsToPlant: any[], landTypeById?: Map<number,
     );
 
     if (skippedSeeds.length > 0) {
-        log('种植', `背包种子不可种植: ${skippedSeeds.map((s: any) => `${s.name}(${s.seedId}) ${s.reason}`).join('; ')}`, {
+        log('种植', `背包种子不可种植: ${skippedSeeds.map((s: any) => `${formatSeedLogLabel(s.name, s.seedId)} ${s.reason}`).join('; ')}`, {
             module: 'farm', event: '种植种子', result: 'bag_seed_skip', strategy: 'bag_priority', skipped: skippedSeeds,
         });
     }
@@ -343,7 +349,7 @@ async function plantFromBagSeeds(landsToPlant: any[], landTypeById?: Map<number,
     if (plantingOrder.length > 0) {
         const orderedSeeds = plantingOrder.map((seed: any, index: number) => {
             const scope = seed.landTypes ? `[仅${formatFertilizerLandTypes(seed.landTypes).join('/')}]` : '';
-            return `${index + 1}.${seed.name}(${seed.seedId})x${toNum(seed && seed.count)}${scope}`;
+            return `${index + 1}.${formatSeedLogLabel(seed.name, seed.seedId)}x${toNum(seed && seed.count)}${scope}`;
         }).join(' -> ');
         log('种植', `背包种子执行顺序: ${orderedSeeds}`, {
             module: 'farm', event: '种植种子', result: 'bag_priority_order', strategy: 'bag_priority',
@@ -380,7 +386,7 @@ async function plantFromBagSeeds(landsToPlant: any[], landTypeById?: Map<number,
         const allLayouts: PlantingLayout[] = buildPlantingLayouts(allowedLandIds, plantSize);
         const layouts: PlantingLayout[] = selectNonOverlappingLayouts(allLayouts, toNum(seed.count));
         const scopeLog = seed.landTypes ? ` 限${formatFertilizerLandTypes(seed.landTypes).join('/')}=${allowedLandIds.length}` : '';
-        log('种植', `背包种子 ${seed.name}(${seed.seedId}) size=${plantSize} count=${seed.count} 剩余=${remainingLandIds.length}${scopeLog} allLayouts=${allLayouts.length} selected=${layouts.length}`, {
+        log('种植', `背包种子 ${formatSeedLogLabel(seed.name, seed.seedId)} size=${plantSize} count=${seed.count} 剩余=${remainingLandIds.length}${scopeLog} allLayouts=${allLayouts.length} selected=${layouts.length}`, {
             module: 'farm', event: '种植种子', result: 'layout_check', strategy: 'bag_priority',
             seedId: seed.seedId, plantSize, count: seed.count, emptyCount: remainingLandIds.length,
             landTypes: seed.landTypes || null, allowedCount: allowedLandIds.length,
@@ -921,7 +927,9 @@ async function plantFromShop(landsToPlant: number[], state: any, overrideStrateg
                 : `金币或限购额度有限，只种 ${needCount} 块地`);
         }
 
-        log('商店', `选择种子: ${seedName} (${candidate.seedId}) 价格=${candidate.price}金币${growTimeStr}`, {
+        // 红薯（种子 20307）在日志里只显示名字，不加种子编号。
+        const shopSeedLogLabel = toNum(candidate.seedId) === 20307 ? seedName : `${seedName} (${candidate.seedId})`;
+        log('商店', `选择种子: ${shopSeedLogLabel} 价格=${candidate.price}金币${growTimeStr}`, {
             module: 'warehouse', event: '选择种子', seedId: candidate.seedId, price: candidate.price,
             count: needCount, purchaseUnits, unitItemCount
         });
