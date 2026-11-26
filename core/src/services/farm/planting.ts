@@ -8,7 +8,7 @@ const { performance } = require('node:perf_hooks');
 const { getPlantNameBySeedId, formatGrowTime, getPlantGrowTime, getAllSeeds, getPlantBySeedId } = require('../../config/gameConfig');
 const { getPreferredSeed, getAutomation, getPlantingStrategy, getBagSeedPriority, getBagSeedMultiLandReservationEnabled, getBagSeedLandTypes, getBagSeedFallbackStrategy, getPlantDelaySeconds } = require('../../models/store');
 const { getUserState, getWsErrorState, sendMsgAsync } = require('../../utils/network');
-const { toNum, getServerTimeSec, log, logWarn, sleep } = require('../../utils/utils');
+const { toNum, getServerTimeSec, log, logWarn, randomDelay } = require('../../utils/utils');
 const { types } = require('../../utils/proto');
 const { getPlantRankings } = require('../analytics');
 const { recordOperation } = require('../stats');
@@ -106,8 +106,17 @@ function getPlantSizeBySeedId(seedId: number | string): number {
 }
 
 /**
- * 相邻种植请求按账号设置间隔；0 秒保留原有 50ms 最小请求间隔。
- * 多格作物必须传入预先选好的布局；回复占地不完整时会补拉全量土地确认。
+ * 批量种植（仿 BUGDey 的批量思路）。
+ * 之前按 plantDelaySeconds 把每块地切到不同轮次、每块地单独一个 Plant 请求；
+ * 现在同一轮里一次种完：
+ * - 1x1 作物：一次 Plant 请求带上该种子全部目标地块。PlantRequest 的
+ *   items[].land_ids 本来就是数组（官方一键种植也是这么发的）；多格作物仍按
+ *   BUGDey 的做法一组一个请求。
+ * - 多格作物：每组一个 Plant 请求，组间只隔 200-400ms（BUGDey 的间隔），
+ *   不再按 plantDelaySeconds 等几秒、也不再把剩余布局留到下一轮。
+ * - 批量请求若失败或只确认了部分地块，对剩下的地块逐块补种（BUGDey
+ *   plantSeeds 的逐块循环，200-400ms 间隔），仍按回复逐块确认占地。
+ * 回复占地不完整时会补拉全量土地确认。
  */
 async function plantSeeds(seedId: number | string, landIds: number[], options: {
     maxPlantCount?: number;
@@ -129,23 +138,94 @@ async function plantSeeds(seedId: number | string, landIds: number[], options: {
             .filter((layout: PlantingLayout) => layout.anchorLandId > 0 && layout.landIds.length > 0)
         : normalizedLandIds.map((id: number) => ({ anchorLandId: id, landIds: [id] }));
     const requestedLayouts = layouts.slice(0, maxPlantCount);
-    const selectedLayouts = isSlicedPlanting(pacing) ? requestedLayouts.slice(0, 1) : requestedLayouts;
     const plantedLandIds: number[] = [];
     const occupiedLandIds = new Set<number>();
     const reservedLandIds = new Set<number>();
     let uncertain = false;
 
+    // 按回复确认单个布局的占地：布局里的地块都已占上且主地块有作物。
+    function confirmLayout(layout: PlantingLayout, changedLands: any[]): { ok: boolean; masterId: number; occupiedIds: number[] } {
+        const resolved = resolveOccupiedLandIds(layout.anchorLandId, changedLands);
+        const masterId = toNum(resolved.masterLandId) || layout.anchorLandId;
+        const occupiedIds = (Array.isArray(resolved.occupiedLandIds) ? resolved.occupiedLandIds : [])
+            .map((id: any) => toNum(id)).filter(Boolean);
+        const ok = confirmsPlantedFootprint(new Set(layout.landIds), masterId, occupiedIds, changedLands);
+        return { ok, masterId, occupiedIds };
+    }
+
+    // 确认成功的布局记入结果。
+    function acceptLayout(layout: PlantingLayout, masterId: number, occupiedIds: number[]): void {
+        plantedLandIds.push(masterId);
+        for (const occupiedId of occupiedIds) occupiedLandIds.add(occupiedId);
+        for (const expectedId of layout.landIds) reservedLandIds.add(expectedId);
+    }
+
+    const singleLayouts: PlantingLayout[] = requestedLayouts.filter((layout: PlantingLayout) => layout.landIds.length === 1);
+    const multiLayouts: PlantingLayout[] = requestedLayouts.filter((layout: PlantingLayout) => layout.landIds.length > 1);
+
+    // ---- 1x1 作物：一次 Plant 请求带上该种子全部目标地块 ----
+    const retryLayouts: PlantingLayout[] = [];
+    if (singleLayouts.length > 0) {
+        const allIds: number[] = singleLayouts.map((layout: PlantingLayout) => layout.anchorLandId);
+        let batchReplyLands: any[] | null = null;
+        try {
+            const body = encodePlantRequest(seedId, allIds);
+            const { body: replyBody } = await sendMsgAsync('gamepb.plantpb.PlantService', 'Plant', body);
+            pacing.lastPlantAt = performance.now();
+            const reply = decodeChangedLands(types.PlantReply, replyBody);
+            batchReplyLands = Array.isArray(reply && reply.land) ? reply.land : [];
+        } catch (e: any) {
+            logWarn('种植', `批量播种${getPlantNameBySeedId(toNum(seedId))}(${toNum(seedId)}) ${allIds.length} 块地失败，逐块补种: ${e.message}`, {
+                module: 'farm', event: '种植种子', result: 'batch_rpc_uncertain', seedId: toNum(seedId), count: allIds.length
+            });
+            if (options.propagateErrors) throw e;
+        }
+        if (batchReplyLands) {
+            const unconfirmed: PlantingLayout[] = [];
+            for (const layout of singleLayouts) {
+                const result = confirmLayout(layout, batchReplyLands);
+                if (result.ok) acceptLayout(layout, result.masterId, result.occupiedIds);
+                else unconfirmed.push(layout);
+            }
+            // 批量回复里没确认的，补拉一次全量土地再确认；仍不确认的逐块补种。
+            if (unconfirmed.length > 0) {
+                let latestLands: any[] = [];
+                try {
+                    const latest = await getAllLands();
+                    latestLands = Array.isArray(latest && latest.lands) ? latest.lands : [];
+                } catch (e: any) {
+                    logWarn('种植', `批量种植后补拉占地失败 ${e.message}，逐块补种`, {
+                        module: 'farm', event: '种植种子', result: 'footprint_uncertain', seedId: toNum(seedId)
+                    });
+                    if (options.propagateErrors) throw e;
+                }
+                for (const layout of unconfirmed) {
+                    const result = latestLands.length > 0
+                        ? confirmLayout(layout, latestLands)
+                        : { ok: false, masterId: layout.anchorLandId, occupiedIds: [] as number[] };
+                    if (result.ok) {
+                        acceptLayout(layout, result.masterId, result.occupiedIds);
+                    } else {
+                        for (const expectedId of layout.landIds) reservedLandIds.add(expectedId);
+                        retryLayouts.push(layout);
+                    }
+                }
+            }
+        } else {
+            retryLayouts.push(...singleLayouts);
+        }
+    }
+
+    // ---- 多格作物（一组一个请求）与批量未确认的 1x1（逐块补种）----
+    // 请求之间只隔 200-400ms（BUGDey 的间隔），不再按 plantDelaySeconds 等待，
+    // 也不再把剩余布局留到下一轮。
+    const selectedLayouts: PlantingLayout[] = [...multiLayouts, ...retryLayouts];
+
     for (let index = 0; index < selectedLayouts.length; index++) {
         const layout = selectedLayouts[index];
         const landId = layout.anchorLandId;
-        if (pacing.lastPlantAt !== null) {
-            const remainingMs = getRemainingPlantDelayMs(pacing);
-            if (remainingMs > 0 && isSlicedPlanting(pacing)) {
-                pacing.deferred = true;
-                break;
-            }
-            if (remainingMs > 0) await sleep(remainingMs);
-        }
+        // 多个请求之间只隔 200-400ms（BUGDey 的间隔），不再按 plantDelaySeconds 等待。
+        if (index > 0) await randomDelay(200, 400);
         let rpcSucceeded = false;
         let resolvedMasterId = 0;
         let resolvedOccupiedIds: number[] = [];
@@ -190,7 +270,10 @@ async function plantSeeds(seedId: number | string, landIds: number[], options: {
                     module: 'farm', event: '种植种子', result: 'footprint_uncertain', seedId: toNum(seedId), landId,
                     expectedLandIds: layout.landIds,
                 });
-                break;
+                // 多格布局占地不确定时停下来，避免继续请求重叠土地；
+                // 1x1 补种各块地互不重叠，继续补种下一块。
+                if (layout.landIds.length > 1) break;
+                continue;
             }
 
             plantedLandIds.push(resolvedMasterId);
@@ -206,9 +289,6 @@ async function plantSeeds(seedId: number | string, landIds: number[], options: {
             break;
         }
         if (!rpcSucceeded) break;
-    }
-    if (!uncertain && plantedLandIds.length > 0 && selectedLayouts.length < requestedLayouts.length) {
-        pacing.deferred = true;
     }
     return {
         planted: plantedLandIds.length,
@@ -455,8 +535,7 @@ async function plantFromBagSeeds(landsToPlant: any[], landTypeById?: Map<number,
         if (result.planted > 0) {
             totalPlanted += result.planted;
             plantedLandIds.push(...result.plantedLandIds);
-            usedSeedLogs.push(`${seed.name}x${result.planted}`);
-            if (!result.uncertain && remainingLandIds.length > 0 && isSlicedPlanting(pacing)) pacing.deferred = true;
+            usedSeedLogs.push(`${seed.name}${formatSeedCountSuffix(seed.seedId, result.planted)}`);
         }
         
         if (result.uncertain && seed.requiredLevel <= stateLevel) {
@@ -845,8 +924,7 @@ async function autoPlantEmptyLands(deadLandIds: number[], emptyLandIds: number[]
 
 async function plantFromShop(landsToPlant: number[], state: any, overrideStrategy?: string, options: { propagateErrors?: boolean; pacing?: PlantingPacing } = {}): Promise<any> {
     const pacing = options.pacing || { lastPlantAt: null };
-    if (pacing.deferred || (isSlicedPlanting(pacing) && getRemainingPlantDelayMs(pacing) > 0)) {
-        pacing.deferred = true;
+    if (pacing.deferred) {
         return { plantedLands: [], remainingLandIds: [...landsToPlant], uncertain: false };
     }
     let remainingLandIds: number[] = [...new Set<number>((Array.isArray(landsToPlant) ? landsToPlant : [])
@@ -871,10 +949,7 @@ async function plantFromShop(landsToPlant: number[], state: any, overrideStrateg
             pacing.shopSeed.remaining = count - result.planted;
             if (result.uncertain || pacing.shopSeed.remaining <= 0) delete pacing.shopSeed;
             if (result.uncertain || remainingLandIds.length === 0) return { plantedLands, remainingLandIds, uncertain: result.uncertain };
-            if (isSlicedPlanting(pacing) || pacing.deferred) {
-                pacing.deferred = true;
-                return { plantedLands, remainingLandIds, uncertain: false };
-            }
+            // 批量种植一轮种完，继续走下面的候选种子流程，不再留到下一轮。
         }
         delete pacing.shopSeed;
     }
@@ -904,8 +979,6 @@ async function plantFromShop(landsToPlant: number[], state: any, overrideStrateg
             });
             continue;
         }
-
-        if (isSlicedPlanting(pacing)) layouts = layouts.slice(0, 1);
 
         const unitItemCount = Math.max(1, toNum(candidate.unitItemCount) || 1);
         const requiredSeedCount = layouts.length;
@@ -995,7 +1068,6 @@ async function plantFromShop(landsToPlant: number[], state: any, overrideStrateg
             });
         } else if (pacing.defer) {
             if (receivedSeedCount > result.planted) pacing.shopSeed = { seedId: actualSeedId, strategy: strategyKey, remaining: receivedSeedCount - result.planted };
-            if (isSlicedPlanting(pacing) && result.planted > 0 && remainingLandIds.length > 0) pacing.deferred = true;
         }
     }
 
