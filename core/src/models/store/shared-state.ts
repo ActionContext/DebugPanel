@@ -130,6 +130,8 @@ const DEFAULT_ACCOUNT_CONFIG: AccountConfig = {
     autoAcceptHarvestStealEnabled: true,
     autoAcceptHarvestStealHarvest: 8,
     autoAcceptHarvestStealSteal: 1,
+    instantHarvest: false,
+    instantSteal: false,
 };
 
 const ALLOWED_AUTOMATION_KEYS: Set<string> = new Set(Object.keys(DEFAULT_ACCOUNT_CONFIG.automation));
@@ -344,6 +346,8 @@ function cloneAccountConfig(base: Partial<AccountConfig> = DEFAULT_ACCOUNT_CONFI
             : DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealEnabled,
         autoAcceptHarvestStealHarvest: normalizeAutoAcceptHarvestStealHarvest(base.autoAcceptHarvestStealHarvest, DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealHarvest),
         autoAcceptHarvestStealSteal: normalizeAutoAcceptHarvestStealSteal(base.autoAcceptHarvestStealSteal, DEFAULT_ACCOUNT_CONFIG.autoAcceptHarvestStealSteal),
+        instantHarvest: !!base.instantHarvest,
+        instantSteal: !!base.instantSteal,
     };
 }
 
@@ -506,6 +510,14 @@ function normalizeAccountConfig(input: unknown, fallback: AccountConfig = accoun
 
     if (src.autoAcceptHarvestStealSteal !== undefined && src.autoAcceptHarvestStealSteal !== null) {
         cfg.autoAcceptHarvestStealSteal = normalizeAutoAcceptHarvestStealSteal(src.autoAcceptHarvestStealSteal, cfg.autoAcceptHarvestStealSteal);
+    }
+
+    if (src.instantHarvest !== undefined && src.instantHarvest !== null) {
+        cfg.instantHarvest = !!src.instantHarvest;
+    }
+
+    if (src.instantSteal !== undefined && src.instantSteal !== null) {
+        cfg.instantSteal = !!src.instantSteal;
     }
 
     return cfg;

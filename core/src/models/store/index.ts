@@ -44,6 +44,8 @@ module.exports = {
     getAutoAcceptHarvestStealEnabled: accountConfig.getAutoAcceptHarvestStealEnabled,
     getAutoAcceptHarvestStealHarvest: accountConfig.getAutoAcceptHarvestStealHarvest,
     getAutoAcceptHarvestStealSteal: accountConfig.getAutoAcceptHarvestStealSteal,
+    getInstantHarvest: accountConfig.getInstantHarvest,
+    getInstantSteal: accountConfig.getInstantSteal,
     getPlantBlacklist: accountConfig.getPlantBlacklist,
     setPlantBlacklist: accountConfig.setPlantBlacklist,
     getDefaultAccountConfig: accountConfig.getDefaultAccountConfig,
