@@ -20,7 +20,8 @@ const {
   pendingActions,
   yishuHuanfuFriendShops,
   yishuHuanfuFriendShopsLoading,
-  yishuHuanfuAllScanLoading,
+  yishuHuanfuFriendPage,
+  yishuHuanfuFriendTotalPages,
   yishuHuanfuFriendScanAt,
   yishuHuanfuFriendScanNote,
   yishuHuanfuRecords,
@@ -246,7 +247,8 @@ async function onClaimCommission() {
         :pending-commission="pendingActions.claimYishuHuanfuCommission"
         :friend-shops="yishuHuanfuFriendShops"
         :friend-shops-loading="yishuHuanfuFriendShopsLoading"
-        :all-scan-loading="yishuHuanfuAllScanLoading"
+        :friend-page="yishuHuanfuFriendPage"
+        :friend-total-pages="yishuHuanfuFriendTotalPages"
         :friend-scan-at="yishuHuanfuFriendScanAt"
         :friend-scan-note="yishuHuanfuFriendScanNote"
         :records="yishuHuanfuRecords"
@@ -262,7 +264,7 @@ async function onClaimCommission() {
         @share="activityStore.shareYishuHuanfuShop(accountId())"
         @exchange="(index, count) => activityStore.exchangeYishuHuanfuGoods(accountId(), index, count)"
         @scan-friends="(force) => activityStore.scanYishuHuanfuFriendShops(accountId(), force)"
-        @scan-all-friends="activityStore.scanAllYishuHuanfuFriendShops(accountId())"
+        @scan-page="(page) => activityStore.scanYishuHuanfuFriendShops(accountId(), true, page)"
         @refresh-shop="loadShopQuota"
         @refresh-quote="activityStore.refreshYishuHuanfuQuote(accountId())"
         @claim-commission="onClaimCommission"
