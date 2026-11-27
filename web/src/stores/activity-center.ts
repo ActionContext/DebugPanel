@@ -2057,6 +2057,9 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
   // 好友铺子比价是独立命令（cmd 92 批量扫描），不进快照，避免每次刷新都扫一遍好友。
   const yishuHuanfuFriendShops = ref<YishuHuanfuFriendShopDto[]>([])
   const yishuHuanfuFriendShopsLoading = ref(false)
+  // 全量比价（一次扫完所有好友）是独立的长请求：500 个好友约 30-60 秒，
+  // 与常规比价共用同一份列表，但 loading 各算各的，两个按钮互斥。
+  const yishuHuanfuAllScanLoading = ref(false)
   const yishuHuanfuFriendScanAt = ref(0)
   const yishuHuanfuFriendScanNote = ref('')
   // 收购记录（cmd 95）是独立查询，不放在快照里，避免每次轮询都多打一次网关。
@@ -2609,13 +2612,43 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     }
   }
 
+  // 好友铺子比价行 DTO：常规比价与全量比价共用同一份映射，避免两处漂移。
+  function mapYishuHuanfuFriendShop(entry: ActivityRecord): YishuHuanfuFriendShopDto {
+    const price = text(entry.price)
+    const bonus = text(entry.bonus)
+    // 后端会给 totalPrice；老版本后端没有时按基础价 + 加成兜底，别退回只显示基础价。
+    const totalPrice = text(entry.totalPrice, entry.total_price)
+      || String(Number(price || '0') + Number(bonus || '0'))
+    return {
+      gid: text(entry.gid),
+      name: text(entry.name),
+      avatar: text(entry.avatar),
+      level: text(entry.level),
+      own: bool(entry.own),
+      price,
+      bonus,
+      totalPrice,
+      quota: text(entry.quota),
+      quotaCap: text(entry.quotaCap, entry.quota_cap),
+      quotaUsed: text(entry.quotaUsed, entry.quota_used),
+      // can_sell 是三态：缺字段时保持 null（按可卖处理），只有明确 false 才禁卖。
+      canSell: entry.canSell === undefined || entry.canSell === null
+        ? null
+        : bool(entry.canSell, entry.can_sell),
+      // 自家铺子不占好友额度，界面固定显示「不限」。
+      unlimited: bool(entry.unlimited) || bool(entry.own),
+      via: (text(entry.via) || (bool(entry.own) ? 'own' : 'friend')) as 'own' | 'friend' | 'panel',
+      panelAccount: text(entry.panelAccount, entry.panel_account),
+    }
+  }
+
   /**
    * 好友铺子比价：把好友列表逐个丢给 cmd 92 查今日收购价。
    * force 为真时跳过后端 3 分钟缓存，用于手动刷新。
    */
   async function scanYishuHuanfuFriendShops(accountId: string, force = false) {
     const requestedAccountId = String(accountId || '').trim()
-    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value)
+    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value || yishuHuanfuAllScanLoading.value)
       return false
     // 换账号先清空上一个账号的比价结果（同步执行，界面上不会闪别人的好友）。
     if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
@@ -2632,34 +2665,7 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
       // 扫描期间切了账号：这份结果属于上一个账号，丢掉。
       if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
         return false
-      yishuHuanfuFriendShops.value = records(payload.shops).map((entry) => {
-        const price = text(entry.price)
-        const bonus = text(entry.bonus)
-        // 后端会给 totalPrice；老版本后端没有时按基础价 + 加成兜底，别退回只显示基础价。
-        const totalPrice = text(entry.totalPrice, entry.total_price)
-          || String(Number(price || '0') + Number(bonus || '0'))
-        return {
-          gid: text(entry.gid),
-          name: text(entry.name),
-          avatar: text(entry.avatar),
-          level: text(entry.level),
-          own: bool(entry.own),
-          price,
-          bonus,
-          totalPrice,
-          quota: text(entry.quota),
-          quotaCap: text(entry.quotaCap, entry.quota_cap),
-          quotaUsed: text(entry.quotaUsed, entry.quota_used),
-          // can_sell 是三态：缺字段时保持 null（按可卖处理），只有明确 false 才禁卖。
-          canSell: entry.canSell === undefined || entry.canSell === null
-            ? null
-            : bool(entry.canSell, entry.can_sell),
-          // 自家铺子不占好友额度，界面固定显示「不限」。
-          unlimited: bool(entry.unlimited) || bool(entry.own),
-          via: (text(entry.via) || (bool(entry.own) ? 'own' : 'friend')) as 'own' | 'friend' | 'panel',
-          panelAccount: text(entry.panelAccount, entry.panel_account),
-        }
-      })
+      yishuHuanfuFriendShops.value = records(payload.shops).map(mapYishuHuanfuFriendShop)
       yishuHuanfuFriendScanAt.value = finiteNumber(first(payload.scannedAt, payload.scanned_at)) || Date.now()
       const scanned = finiteNumber(first(payload.scanned)) || 0
       const failed = finiteNumber(first(payload.failed)) || 0
@@ -2684,9 +2690,63 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     }
   }
 
+  /**
+   * 全量好友比价：一次扫完整个候选池（本账号全部好友 + 面板其它账号的好友），
+   * 后端只返回成交价最高的那一家（同价并列都返回），比它低的全部滤掉，
+   * 这里直接把下面列表刷新成它。常规比价默认只扫 60 个、最多 200 个，
+   * 好友多时最高价可能落在没轮到的那批里，全量才扫得全。
+   * 500 个好友约需 30-60 秒：axios 默认 10 秒超时不够用，这里放宽到 180 秒，
+   * 与 worker-manager 里 scanAllYishuHuanfuFriendShops 的 180 秒超时对应。
+   */
+  async function scanAllYishuHuanfuFriendShops(accountId: string) {
+    const requestedAccountId = String(accountId || '').trim()
+    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value || yishuHuanfuAllScanLoading.value)
+      return false
+    if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
+      clearYishuHuanfuFriendShops()
+    yishuHuanfuFriendShopsAccountId.value = requestedAccountId
+    yishuHuanfuAllScanLoading.value = true
+    try {
+      const response = await api.get('/api/activity-center/yishuhuanfu/friends/all', {
+        headers: { 'x-account-id': requestedAccountId },
+        timeout: 180000,
+        skipErrorToast: true,
+      } as any)
+      const payload = record(responsePayload(response.data))
+      // 扫描期间切了账号：这份结果属于上一个账号，丢掉。
+      if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
+        return false
+      yishuHuanfuFriendShops.value = records(payload.shops).map(mapYishuHuanfuFriendShop)
+      yishuHuanfuFriendScanAt.value = finiteNumber(first(payload.scannedAt, payload.scanned_at)) || Date.now()
+      const scanned = finiteNumber(first(payload.scanned)) || 0
+      const failed = finiteNumber(first(payload.failed)) || 0
+      const friendListError = text(payload.friendListError, payload.friend_list_error)
+      const panelFriendCount = finiteNumber(first(payload.panelFriendCount, payload.panel_friend_count)) || 0
+      // 后端 message 已写好全量结果（扫了多少个、最高价多少），直接用它；
+      // 老版本后端没有时再按字段拼一条。
+      yishuHuanfuFriendScanNote.value = friendListError
+        || text(payload.message)
+        || (scanned === 0
+          ? '没有可查询的铺子'
+          : `全量扫描 ${scanned} 个铺子`
+            + `${panelFriendCount ? `（含其它账号好友 ${panelFriendCount} 个）` : ''}`
+            + `，只显示最高价`
+            + `${failed ? `，${failed} 个查询失败` : ''}`)
+      return true
+    } catch (scanError) {
+      if (yishuHuanfuFriendShopsAccountId.value === requestedAccountId)
+        yishuHuanfuFriendScanNote.value = errorMessage(scanError, '全量好友比价失败')
+      return false
+    } finally {
+      if (yishuHuanfuFriendShopsAccountId.value === requestedAccountId)
+        yishuHuanfuAllScanLoading.value = false
+    }
+  }
+
   function clearYishuHuanfuFriendShops() {
     yishuHuanfuFriendShops.value = []
     yishuHuanfuFriendShopsLoading.value = false
+    yishuHuanfuAllScanLoading.value = false
     yishuHuanfuFriendScanAt.value = 0
     yishuHuanfuFriendScanNote.value = ''
     yishuHuanfuFriendShopsAccountId.value = ''
@@ -2889,6 +2949,8 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     yishuHuanfuRecordsNote,
     clearYishuHuanfuRecords,
     scanYishuHuanfuFriendShops,
+    scanAllYishuHuanfuFriendShops,
+    yishuHuanfuAllScanLoading,
     clearYishuHuanfuFriendShops,
     claimQingMeiDailySeed,
     startQingMeiBrew,
