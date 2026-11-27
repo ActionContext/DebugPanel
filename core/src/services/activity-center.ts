@@ -638,7 +638,6 @@ module.exports = {
     claimYishuHuanfuCommission: yishuHuanfuService.claimYishuHuanfuCommission,
     queryYishuHuanfuShop: yishuHuanfuService.queryYishuHuanfuShop,
     scanYishuHuanfuFriendShops: yishuHuanfuService.scanYishuHuanfuFriendShops,
-    scanAllYishuHuanfuFriendShops: yishuHuanfuService.scanAllYishuHuanfuFriendShops,
     exchangeYishuHuanfuGoods: yishuHuanfuService.exchangeYishuHuanfuGoods,
     shareYishuHuanfuShop: yishuHuanfuService.shareYishuHuanfuShop,
 };
