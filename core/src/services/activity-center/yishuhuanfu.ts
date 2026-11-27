@@ -659,16 +659,13 @@ function createYishuHuanfuActivityService(deps: any) {
      * 失败项单独计数返回，避免一个失联账号拖垮整张比价表。
      */
     async function scanYishuHuanfuFriendShops(options: any = {}) {
-        // 全量比价（all: true）：不走 60/200 上限和轮换窗口，把候选池一次扫完，
-        // 也不读/写 3 分钟缓存——点一次就是一次全新全量扫描。
-        const scanAll = options?.all === true;
         const limitRaw = Number(options?.limit);
-        const limit = scanAll ? 0 : (Number.isFinite(limitRaw) && limitRaw > 0
+        const limit = Number.isFinite(limitRaw) && limitRaw > 0
             ? Math.min(Math.floor(limitRaw), FRIEND_SCAN_MAX_LIMIT)
-            : FRIEND_SCAN_DEFAULT_LIMIT);
+            : FRIEND_SCAN_DEFAULT_LIMIT;
         const force = options?.force === true;
         const now = Date.now();
-        if (!scanAll && !force && friendScanCache && now - friendScanCache.at < FRIEND_SCAN_TTL_MS) {
+        if (!force && friendScanCache && now - friendScanCache.at < FRIEND_SCAN_TTL_MS) {
             return { ...friendScanCache.data, cached: true };
         }
 
@@ -730,7 +727,25 @@ function createYishuHuanfuActivityService(deps: any) {
                 panelAccount: entry.accountName,
             });
         }
-        const slice = scanAll ? targets : takeScanWindow(targets, limit, !!own);
+        // 分页：传了 page（>= 1）就按页取窗口，上一页/下一页用；不传 page 时
+        // 沿用旧的轮换窗口（自动任务不传 page，靠轮换几轮覆盖整个候选池）。
+        // 每页 60 个（limit 默认 60，自家铺子永远在内、占 1 个位置），页内按成交价从高到低排。
+        const pageRaw = Number(options?.page);
+        const hasPage = Number.isFinite(pageRaw) && pageRaw >= 1;
+        const ownEntry = own ? targets[0] : null;
+        const others = own ? targets.slice(1) : targets.slice();
+        const pageSize = Math.max(1, limit - (ownEntry ? 1 : 0));
+        const totalPages = Math.max(1, Math.ceil(others.length / pageSize));
+        let page = 0;
+        let slice: any[];
+        if (hasPage) {
+            page = Math.min(Math.floor(pageRaw), totalPages);
+            const start = (page - 1) * pageSize;
+            const window = others.slice(start, start + pageSize);
+            slice = ownEntry ? [ownEntry, ...window] : window;
+        } else {
+            slice = takeScanWindow(targets, limit, !!own);
+        }
 
         const shops: any[] = [];
         let failed = 0;
@@ -774,13 +789,8 @@ function createYishuHuanfuActivityService(deps: any) {
             return quotaDiff === 0n ? 0 : quotaDiff > 0n ? 1 : -1;
         });
 
-        // 全量比价只留最高价：同价并列的都留着（挑额度大的卖），比它低的全部滤掉。
-        const bestShops = scanAll && shops.length
-            ? shops.filter(entry => entry.totalPrice === shops[0].totalPrice)
-            : shops;
-
         const data = {
-            shops: bestShops,
+            shops,
             best: shops[0] || null,
             ownShop: shops.find(entry => entry.own) || null,
             scanned: slice.length,
@@ -790,38 +800,27 @@ function createYishuHuanfuActivityService(deps: any) {
             panelFriendCount: panelCount,
             candidateCount: targets.length - (own ? 1 : 0),
             // 候选池超过本轮上限时按轮换窗口扫，这里告诉界面还有多少没轮到。
-            // 全量扫描一次扫完，没有待轮换的候选。
-            pendingCount: scanAll ? 0 : Math.max(0, targets.length - (own ? 1 : 0) - slice.filter(entry => !entry.own).length),
-            limit: scanAll ? targets.length : limit,
-            all: scanAll,
+            // 分页时改成“本页之后还剩多少候选”，翻到最后一页就是 0。
+            pendingCount: hasPage
+                ? Math.max(0, others.length - page * pageSize)
+                : Math.max(0, targets.length - (own ? 1 : 0) - slice.filter(entry => !entry.own).length),
+            limit,
+            // 分页信息：传了 page 才有意义；不传 page 的旧调用（自动任务）返回 0。
+            page: hasPage ? page : 0,
+            totalPages: hasPage ? totalPages : 0,
+            pageSize,
             friendListError,
             message: shops.length === 0
                 ? (friendListError || '没有可查询的铺子')
-                : scanAll
-                    ? `全量扫描 ${shops.length} 个铺子${panelCount ? `（含其它账号好友 ${panelCount} 个）` : ''}，`
-                        + `最高收购价 ${shops[0].totalPrice}${bestShops.length > 1 ? `（${bestShops.length} 个同价）` : ''}，只显示最高价`
-                    : `已扫描 ${shops.length} 个铺子${panelCount ? `（含其它账号好友 ${panelCount} 个）` : ''}，`
-                        + `最高收购价 ${shops[0].totalPrice}`,
+                : `已扫描 ${shops.length} 个铺子${panelCount ? `（含其它账号好友 ${panelCount} 个）` : ''}，`
+                    + `最高收购价 ${shops[0].totalPrice}`
+                    + (hasPage && totalPages > 1 ? `（第 ${page}/${totalPages} 页）` : ''),
             errorMessage: failureMessage,
             cached: false,
             scannedAt: now,
         };
-        // 全量扫描不写常规比价的缓存：那份缓存是 60 个一轮的轮换结果，
-        // 全量只剩 1 个铺子的结果写进去会让下一次常规比价只剩 1 条。
-        if (!scanAll) friendScanCache = { at: now, data };
+        friendScanCache = { at: now, data };
         return data;
-    }
-
-    /**
-     * 全量好友比价：把候选池（本账号全部好友 + 面板其它账号的好友）一次扫完，
-     * 只返回成交价最高的那一家（同价并列都返回），比它低的全部滤掉。
-     * 常规比价默认只扫 60 个、最多 200 个，候选池大时靠轮换几轮才覆盖完；
-     * 好友多（比如 500 个）时最高价可能落在没轮到的那批里，这个接口一次扫完。
-     * 注意：500 个好友约需 30-60 秒，前端与 worker 侧都要放宽超时
-     *（friends/all 路由、store 的 180 秒超时、worker-manager 的同名超时项）。
-     */
-    async function scanAllYishuHuanfuFriendShops() {
-        return scanYishuHuanfuFriendShops({ all: true, force: true });
     }
 
     /**
@@ -1152,7 +1151,6 @@ function createYishuHuanfuActivityService(deps: any) {
         claimYishuHuanfuSeeds,
         queryYishuHuanfuShop,
         scanYishuHuanfuFriendShops,
-        scanAllYishuHuanfuFriendShops,
         sellYishuHuanfuSweetPotato,
         refreshYishuHuanfuQuote,
         queryYishuHuanfuCatalog,
