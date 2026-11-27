@@ -2057,9 +2057,9 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
   // 好友铺子比价是独立命令（cmd 92 批量扫描），不进快照，避免每次刷新都扫一遍好友。
   const yishuHuanfuFriendShops = ref<YishuHuanfuFriendShopDto[]>([])
   const yishuHuanfuFriendShopsLoading = ref(false)
-  // 全量比价（一次扫完所有好友）是独立的长请求：500 个好友约 30-60 秒，
-  // 与常规比价共用同一份列表，但 loading 各算各的，两个按钮互斥。
-  const yishuHuanfuAllScanLoading = ref(false)
+  // 比价分页：第几页 / 一共几页（后端 page/totalPages 回来才有，0 表示未分页）。
+  const yishuHuanfuFriendPage = ref(0)
+  const yishuHuanfuFriendTotalPages = ref(0)
   const yishuHuanfuFriendScanAt = ref(0)
   const yishuHuanfuFriendScanNote = ref('')
   // 收购记录（cmd 95）是独立查询，不放在快照里，避免每次轮询都多打一次网关。
@@ -2645,10 +2645,15 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
   /**
    * 好友铺子比价：把好友列表逐个丢给 cmd 92 查今日收购价。
    * force 为真时跳过后端 3 分钟缓存，用于手动刷新。
+   * page >= 1 按页取窗口（每页 60 个，页内价高在前；上一页/下一页用）；
+   * page 缺省为 1，「重新比价」回到第 1 页重扫。
+   * 60 个铺子要拉好友列表 + 15 批 cmd 92 查询，网关慢时会超过 axios 与 worker
+   * 默认的 10 秒超时（界面表现为“重新比价一直超时、下一波刷不出来”），这里放宽到 60 秒，
+   * 与 worker-manager 里 scanYishuHuanfuFriendShops 的 60 秒超时对应。
    */
-  async function scanYishuHuanfuFriendShops(accountId: string, force = false) {
+  async function scanYishuHuanfuFriendShops(accountId: string, force = false, page = 1) {
     const requestedAccountId = String(accountId || '').trim()
-    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value || yishuHuanfuAllScanLoading.value)
+    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value)
       return false
     // 换账号先清空上一个账号的比价结果（同步执行，界面上不会闪别人的好友）。
     if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
@@ -2656,9 +2661,11 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     yishuHuanfuFriendShopsAccountId.value = requestedAccountId
     yishuHuanfuFriendShopsLoading.value = true
     try {
+      const targetPage = Math.max(1, Math.floor(Number(page)) || 1)
       const response = await api.get('/api/activity-center/yishuhuanfu/friends', {
         headers: { 'x-account-id': requestedAccountId },
-        params: force ? { force: 1 } : {},
+        params: { ...(force ? { force: 1 } : {}), page: targetPage },
+        timeout: 60000,
         skipErrorToast: true,
       } as any)
       const payload = record(responsePayload(response.data))
@@ -2672,13 +2679,16 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
       const friendListError = text(payload.friendListError, payload.friend_list_error)
       const panelFriendCount = finiteNumber(first(payload.panelFriendCount, payload.panel_friend_count)) || 0
       const pendingCount = finiteNumber(first(payload.pendingCount, payload.pending_count)) || 0
+      // 后端回的 page/totalPages 为准（缓存里那份是哪页就显示哪页）。
+      yishuHuanfuFriendPage.value = finiteNumber(first(payload.page)) || 0
+      yishuHuanfuFriendTotalPages.value = finiteNumber(first(payload.totalPages, payload.total_pages)) || 0
       yishuHuanfuFriendScanNote.value = friendListError
         || (scanned === 0
           ? '没有可查询的铺子'
           : `已扫描 ${yishuHuanfuFriendShops.value.length} 个铺子`
             + `${panelFriendCount ? `（含其它账号好友 ${panelFriendCount} 个）` : ''}`
             + `${failed ? `，${failed} 个查询失败` : ''}`
-            + `${pendingCount ? `，还有 ${pendingCount} 个候选待下一轮轮换` : ''}`)
+            + `${pendingCount ? `，后面还有 ${pendingCount} 个候选可翻页` : ''}`)
       return true
     } catch (scanError) {
       if (yishuHuanfuFriendShopsAccountId.value === requestedAccountId)
@@ -2690,63 +2700,11 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     }
   }
 
-  /**
-   * 全量好友比价：一次扫完整个候选池（本账号全部好友 + 面板其它账号的好友），
-   * 后端只返回成交价最高的那一家（同价并列都返回），比它低的全部滤掉，
-   * 这里直接把下面列表刷新成它。常规比价默认只扫 60 个、最多 200 个，
-   * 好友多时最高价可能落在没轮到的那批里，全量才扫得全。
-   * 500 个好友约需 30-60 秒：axios 默认 10 秒超时不够用，这里放宽到 180 秒，
-   * 与 worker-manager 里 scanAllYishuHuanfuFriendShops 的 180 秒超时对应。
-   */
-  async function scanAllYishuHuanfuFriendShops(accountId: string) {
-    const requestedAccountId = String(accountId || '').trim()
-    if (!requestedAccountId || yishuHuanfuFriendShopsLoading.value || yishuHuanfuAllScanLoading.value)
-      return false
-    if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
-      clearYishuHuanfuFriendShops()
-    yishuHuanfuFriendShopsAccountId.value = requestedAccountId
-    yishuHuanfuAllScanLoading.value = true
-    try {
-      const response = await api.get('/api/activity-center/yishuhuanfu/friends/all', {
-        headers: { 'x-account-id': requestedAccountId },
-        timeout: 180000,
-        skipErrorToast: true,
-      } as any)
-      const payload = record(responsePayload(response.data))
-      // 扫描期间切了账号：这份结果属于上一个账号，丢掉。
-      if (yishuHuanfuFriendShopsAccountId.value !== requestedAccountId)
-        return false
-      yishuHuanfuFriendShops.value = records(payload.shops).map(mapYishuHuanfuFriendShop)
-      yishuHuanfuFriendScanAt.value = finiteNumber(first(payload.scannedAt, payload.scanned_at)) || Date.now()
-      const scanned = finiteNumber(first(payload.scanned)) || 0
-      const failed = finiteNumber(first(payload.failed)) || 0
-      const friendListError = text(payload.friendListError, payload.friend_list_error)
-      const panelFriendCount = finiteNumber(first(payload.panelFriendCount, payload.panel_friend_count)) || 0
-      // 后端 message 已写好全量结果（扫了多少个、最高价多少），直接用它；
-      // 老版本后端没有时再按字段拼一条。
-      yishuHuanfuFriendScanNote.value = friendListError
-        || text(payload.message)
-        || (scanned === 0
-          ? '没有可查询的铺子'
-          : `全量扫描 ${scanned} 个铺子`
-            + `${panelFriendCount ? `（含其它账号好友 ${panelFriendCount} 个）` : ''}`
-            + `，只显示最高价`
-            + `${failed ? `，${failed} 个查询失败` : ''}`)
-      return true
-    } catch (scanError) {
-      if (yishuHuanfuFriendShopsAccountId.value === requestedAccountId)
-        yishuHuanfuFriendScanNote.value = errorMessage(scanError, '全量好友比价失败')
-      return false
-    } finally {
-      if (yishuHuanfuFriendShopsAccountId.value === requestedAccountId)
-        yishuHuanfuAllScanLoading.value = false
-    }
-  }
-
   function clearYishuHuanfuFriendShops() {
     yishuHuanfuFriendShops.value = []
     yishuHuanfuFriendShopsLoading.value = false
-    yishuHuanfuAllScanLoading.value = false
+    yishuHuanfuFriendPage.value = 0
+    yishuHuanfuFriendTotalPages.value = 0
     yishuHuanfuFriendScanAt.value = 0
     yishuHuanfuFriendScanNote.value = ''
     yishuHuanfuFriendShopsAccountId.value = ''
@@ -2907,6 +2865,8 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     yishuHuanfu,
     yishuHuanfuFriendShops,
     yishuHuanfuFriendShopsLoading,
+    yishuHuanfuFriendPage,
+    yishuHuanfuFriendTotalPages,
     yishuHuanfuFriendScanAt,
     yishuHuanfuFriendScanNote,
     charity,
@@ -2949,8 +2909,8 @@ export const useActivityCenterStore = defineStore('activity-center', () => {
     yishuHuanfuRecordsNote,
     clearYishuHuanfuRecords,
     scanYishuHuanfuFriendShops,
-    scanAllYishuHuanfuFriendShops,
-    yishuHuanfuAllScanLoading,
+    yishuHuanfuFriendPage,
+    yishuHuanfuFriendTotalPages,
     clearYishuHuanfuFriendShops,
     claimQingMeiDailySeed,
     startQingMeiBrew,
