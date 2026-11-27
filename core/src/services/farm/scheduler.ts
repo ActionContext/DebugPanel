@@ -170,6 +170,18 @@ async function checkFarm(): Promise<boolean> {
         // 复用手动操作逻辑
         const result = await runFarmOperation('all', null, false, { generation, pacing });
         isFirstFarmCheck = false;
+        // 批量收菜里服务器没确认的地块（比如同批第二个菜在请求到达时还没翻成熟），
+        // 它的成熟记录在本轮开头已被删掉，这里给它重新排一个 500ms 后的唤醒，
+        // 让下一轮巡田马上回来补收，而不是等到下一次 1 秒定时还可能被跳过。
+        // 放在 runFarmOperation 之后，是因为操作里的补拉会清掉并重建成熟记录，
+        // 只有这时写进去的才不会被清掉；finally 里的 armFarmWake 会接着排这个唤醒。
+        if (result && Array.isArray(result.unconfirmedHarvestIds) && result.unconfirmedHarvestIds.length) {
+            const retryAt = Date.now() + 500;
+            for (const item of result.unconfirmedHarvestIds) {
+                landDeadlines.set(item.id, { at: retryAt, plantId: item.plantId });
+            }
+            updateMaturityWake();
+        }
         return !!(result && result.hadWork);
     } catch (err: any) {
         logWarn('巡田', `检查失败: ${err.message}`);
@@ -277,20 +289,39 @@ async function runFarmOperation(
     targetLandIdInput: unknown = null,
     propagateErrors: boolean = false,
     automatic?: { generation: number; pacing: any },
-): Promise<{ hadWork: boolean; actions: string[] }> {
+): Promise<{ hadWork: boolean; actions: string[]; unconfirmedHarvestIds: { id: number; plantId: number }[] }> {
     const actions: string[] = [];
     const harvestedLandIds: number[] = [];
     const harvestReply: { land: any[] } = { land: [] };
     const pushedIds = new Set<number>();
+    // 批量收菜时服务器没确认的地块（比如同批第二个菜在请求到达时还没翻成熟），
+    // 留给调用方重新排一次唤醒，避免成熟记录被提前删掉后迟迟不补收。
+    const unconfirmedHarvestIds: { id: number; plantId: number }[] = [];
     async function collectHarvest(ids: number[], source: any[], isAll: boolean): Promise<void> {
         if (!ids.length) return;
-        for (const land of source) {
-            if (ids.includes(toNum(land.id))) lastHarvestAttempt.set(toNum(land.id), cropKey(land));
-        }
         try {
             const reply = await harvest(ids, isAll);
             const updated = reply.land || [];
-            const completed = isAll ? ids : ids.filter(id => updated.some((land: any) => toNum(land.id) === id));
+            const confirmed = ids.filter(id => updated.some((land: any) => toNum(land.id) === id));
+            // 只把服务器确认收走的地块记成“已尝试”，没确认的不记，
+            // 这样推送到达时还能重新把它加进待收队列。
+            for (const land of source) {
+                const landId = toNum(land.id);
+                if (confirmed.includes(landId)) lastHarvestAttempt.set(landId, cropKey(land));
+            }
+            // 没确认的地块记下来，调用方会给它们排一次 500ms 后的补收唤醒。
+            // 注意：收获响应可能省略 2x2 主地块，completed 仍沿用原来的乐观口径
+            // （isAll 时全算完成），只由 resolveRemovableHarvestedLands 补拉核对，
+            // 所以这里只影响“补收唤醒”，不影响种菜流程。
+            for (const id of ids) {
+                if (confirmed.includes(id)) continue;
+                const land = source.find((item: any) => toNum(item.id) === id);
+                const plantId = toNum(land?.plant?.id);
+                if (!unconfirmedHarvestIds.some(item => item.id === id)) {
+                    unconfirmedHarvestIds.push({ id, plantId });
+                }
+            }
+            const completed = isAll ? ids : confirmed;
             if (!completed.length) return;
             harvestedLandIds.push(...completed);
             harvestReply.land.push(...updated);
@@ -314,12 +345,12 @@ async function runFarmOperation(
         }
     }
     const landsReply = await getAllLands();
-    if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions };
+    if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions, unconfirmedHarvestIds };
     if (!landsReply.lands || landsReply.lands.length === 0) {
         if (opType !== 'all') {
             log('农场', '没有土地数据');
         }
-        return { hadWork: actions.length > 0, actions };
+        return { hadWork: actions.length > 0, actions, unconfirmedHarvestIds };
     }
 
     const lands = landsReply.lands;
@@ -429,7 +460,7 @@ async function runFarmOperation(
         // 注意：如果是单纯点"一键种植"，harvestedLandIds 为空，只种当前的空地/死地
         if (allDeadLands.length > 0 || allEmptyLands.length > 0) {
             try {
-                if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions };
+                if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions, unconfirmedHarvestIds };
                 fertilizerSnapshot = undefined;
                 const plantResult = await autoPlantEmptyLands(allDeadLands, allEmptyLands, {
                     propagateErrors, knownLands: lands,
@@ -504,7 +535,7 @@ async function runFarmOperation(
     }
 
     if (opType === 'all') {
-        if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions };
+        if (automatic && !canContinueFarm(automatic.generation)) return { hadWork: actions.length > 0, actions, unconfirmedHarvestIds };
         const automation = getAutomation();
         const fertilizerConfig = automation.fertilizer || 'none';
         const canApplyNormal = fertilizerConfig === 'normal'
@@ -572,7 +603,7 @@ async function runFarmOperation(
              module: 'farm', event: '农场循环', opType, actions
          });
     }
-    return { hadWork: actions.length > 0, actions };
+    return { hadWork: actions.length > 0, actions, unconfirmedHarvestIds };
 }
 
 function scheduleNextFarmCheck(delayMs: number = CONFIG.farmCheckInterval): void {
