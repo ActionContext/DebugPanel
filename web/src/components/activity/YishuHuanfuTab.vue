@@ -12,8 +12,9 @@ const props = defineProps<{
   pendingCommission: boolean
   friendShops: YishuHuanfuFriendShopDto[]
   friendShopsLoading: boolean
-  // 全量比价的 loading 与常规比价分开：500 个好友要扫 30-60 秒，按钮各自显示状态。
-  allScanLoading: boolean
+  // 比价分页：第几页 / 一共几页（0 表示未分页）。
+  friendPage: number
+  friendTotalPages: number
   friendScanAt: number
   friendScanNote: string
   records: YishuHuanfuRecordDto[]
@@ -34,8 +35,8 @@ const emit = defineEmits<{
   share: []
   exchange: [index: number, count: number]
   scanFriends: [force: boolean]
-  // 全量好友比价：一次扫完所有好友，只留最高价。
-  scanAllFriends: []
+  // 翻页：上一页 / 下一页，页码从 1 开始。
+  scanPage: [page: number]
   refreshShop: []
   refreshQuote: []
   claimCommission: []
@@ -180,7 +181,7 @@ const ranking = computed(() => {
 // 首次进入比价页时自动扫一轮，之后靠手动刷新，避免每次切页都打满请求。
 function openCompare() {
   tab.value = 'compare'
-  if (!props.friendShops.length && !props.friendShopsLoading && !props.allScanLoading)
+  if (!props.friendShops.length && !props.friendShopsLoading)
     emit('scanFriends', false)
 }
 
@@ -578,24 +579,15 @@ function scanAgo() {
         <button
           type="button"
           class="yshf-button ghost compact"
-          :disabled="friendShopsLoading || allScanLoading || busy"
+          :disabled="friendShopsLoading || busy"
           @click="emit('scanFriends', true)"
         >
           {{ friendShopsLoading ? '扫描中…' : '重新比价' }}
         </button>
-        <button
-          type="button"
-          class="yshf-button ghost compact"
-          :disabled="friendShopsLoading || allScanLoading || busy"
-          title="一次扫完所有好友（500 个约 30-60 秒），只显示成交价最高的那一家"
-          @click="emit('scanAllFriends')"
-        >
-          {{ allScanLoading ? '全量扫描中…' : '全GID好友比价' }}
-        </button>
       </div>
       <p class="compare-hint">
         用 GID 逐个查今日收购价（只读命令，不占用对方额度，对方也收不到通知）；候选包含面板里其它账号的好友，非好友也能卖。
-        「重新比价」一次扫 60 个（轮换覆盖）；「全GID好友比价」一次扫完所有好友，只留最高价，好友多时用它。
+        「重新比价」回到第 1 页重扫；每页 60 个，价高的在前面，翻页能把所有好友走完。
         {{ ranking || '挑个价高的铺子卖，比卖给自己更划算。' }}
       </p>
       <p v-if="friendScanNote" class="compare-note">{{ friendScanNote }}<template v-if="friendScanAt">（{{ scanAgo() }}）</template></p>
@@ -628,7 +620,30 @@ function scanAgo() {
           </button>
         </article>
       </div>
-      <p v-else-if="!friendShopsLoading" class="catalog-empty">
+      <!-- 翻页：每页 60 个，价高的在前面；走到最后一页「下一页」不再显示，
+           回到第 1 页「上一页」不再显示，直到把所有好友走完。 -->
+      <div v-if="friendTotalPages > 1" class="compare-pager">
+        <button
+          v-if="friendPage > 1"
+          type="button"
+          class="yshf-button ghost compact"
+          :disabled="friendShopsLoading || busy"
+          @click="emit('scanPage', friendPage - 1)"
+        >
+          上一页
+        </button>
+        <span>第 {{ friendPage }} / {{ friendTotalPages }} 页</span>
+        <button
+          v-if="friendPage < friendTotalPages"
+          type="button"
+          class="yshf-button ghost compact"
+          :disabled="friendShopsLoading || busy"
+          @click="emit('scanPage', friendPage + 1)"
+        >
+          下一页
+        </button>
+      </div>
+      <p v-if="!friendShops.length && !friendShopsLoading" class="catalog-empty">
         还没有比价结果，点「重新比价」把好友铺子扫一遍。
       </p>
     </section>
@@ -1392,6 +1407,17 @@ function scanAgo() {
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* 翻页条：上一页 / 第 X / Y 页 / 下一页；走到最后一页「下一页」不显示。 */
+.compare-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--ui-muted);
 }
 
 .compare-row {
