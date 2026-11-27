@@ -12,6 +12,8 @@ const props = defineProps<{
   pendingCommission: boolean
   friendShops: YishuHuanfuFriendShopDto[]
   friendShopsLoading: boolean
+  // 全量比价的 loading 与常规比价分开：500 个好友要扫 30-60 秒，按钮各自显示状态。
+  allScanLoading: boolean
   friendScanAt: number
   friendScanNote: string
   records: YishuHuanfuRecordDto[]
@@ -32,6 +34,8 @@ const emit = defineEmits<{
   share: []
   exchange: [index: number, count: number]
   scanFriends: [force: boolean]
+  // 全量好友比价：一次扫完所有好友，只留最高价。
+  scanAllFriends: []
   refreshShop: []
   refreshQuote: []
   claimCommission: []
@@ -176,7 +180,7 @@ const ranking = computed(() => {
 // 首次进入比价页时自动扫一轮，之后靠手动刷新，避免每次切页都打满请求。
 function openCompare() {
   tab.value = 'compare'
-  if (!props.friendShops.length && !props.friendShopsLoading)
+  if (!props.friendShops.length && !props.friendShopsLoading && !props.allScanLoading)
     emit('scanFriends', false)
 }
 
@@ -574,14 +578,24 @@ function scanAgo() {
         <button
           type="button"
           class="yshf-button ghost compact"
-          :disabled="friendShopsLoading || busy"
+          :disabled="friendShopsLoading || allScanLoading || busy"
           @click="emit('scanFriends', true)"
         >
           {{ friendShopsLoading ? '扫描中…' : '重新比价' }}
         </button>
+        <button
+          type="button"
+          class="yshf-button ghost compact"
+          :disabled="friendShopsLoading || allScanLoading || busy"
+          title="一次扫完所有好友（500 个约 30-60 秒），只显示成交价最高的那一家"
+          @click="emit('scanAllFriends')"
+        >
+          {{ allScanLoading ? '全量扫描中…' : '全GID好友比价' }}
+        </button>
       </div>
       <p class="compare-hint">
         用 GID 逐个查今日收购价（只读命令，不占用对方额度，对方也收不到通知）；候选包含面板里其它账号的好友，非好友也能卖。
+        「重新比价」一次扫 60 个（轮换覆盖）；「全GID好友比价」一次扫完所有好友，只留最高价，好友多时用它。
         {{ ranking || '挑个价高的铺子卖，比卖给自己更划算。' }}
       </p>
       <p v-if="friendScanNote" class="compare-note">{{ friendScanNote }}<template v-if="friendScanAt">（{{ scanAgo() }}）</template></p>
