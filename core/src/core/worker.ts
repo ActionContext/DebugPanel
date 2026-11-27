@@ -1224,6 +1224,9 @@ async function handleApiCall(msg: any): Promise<void> {
                 case 'scanYishuHuanfuFriendShops':
                     result = await require('../services/activity-center').scanYishuHuanfuFriendShops(args[0]);
                     break;
+                case 'scanAllYishuHuanfuFriendShops':
+                    result = await require('../services/activity-center').scanAllYishuHuanfuFriendShops();
+                    break;
                 case 'exchangeYishuHuanfuGoods':
                     result = await require('../services/activity-center').exchangeYishuHuanfuGoods(args[0], args[1]);
                     break;
