@@ -224,9 +224,6 @@ function createDataProvider(options: DataProviderOptions) {
         scanYishuHuanfuFriendShops: (accountRef: string, options: unknown) => (
             callWorkerApi(resolveAccountRefId(accountRef), 'scanYishuHuanfuFriendShops', options)
         ),
-        scanAllYishuHuanfuFriendShops: (accountRef: string) => (
-            callWorkerApi(resolveAccountRefId(accountRef), 'scanAllYishuHuanfuFriendShops')
-        ),
         exchangeYishuHuanfuGoods: (accountRef: string, index: unknown, count: unknown) => (
             callWorkerApi(resolveAccountRefId(accountRef), 'exchangeYishuHuanfuGoods', index, count)
         ),
