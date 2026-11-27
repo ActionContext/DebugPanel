@@ -16,8 +16,9 @@ const API_CALL_TIMEOUTS_MS: Record<string, number> = {
     getPetDiaryFriend: 30000,
     scanWeatherFriends: 60000,
     getWeatherFriends: 30000,
-    // 全量好友比价一次扫完整个候选池（500 个好友约 30-60 秒），给 3 分钟余量。
-    scanAllYishuHuanfuFriendShops: 180000,
+    // 好友铺子比价一次扫 60 个铺子：好友列表 + 15 批 cmd 92 查询，网关慢时会超过
+    // 默认 10 秒超时（界面表现为“重新比价一直超时、下一波刷不出来”），给 60 秒余量。
+    scanYishuHuanfuFriendShops: 60000,
     clearRanchIllustratedNew: 40000,
 };
 
