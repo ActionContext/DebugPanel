@@ -13,6 +13,11 @@ export function mountYishuHuanfuActivityRoutes({ app, ctx, withAccount, mountGet
             force: req.query?.force === '1' || req.query?.force === 'true',
         })
     )));
+    // 全量好友比价（只读）：一次扫完整个候选池，只返回成交价最高的那一家
+    //（同价并列都返回），比它低的全部滤掉。500 个好友约需 30-60 秒。
+    app.get('/api/activity-center/yishuhuanfu/friends/all', withAccount((accountId: string) => (
+        ctx.provider.scanAllYishuHuanfuFriendShops(accountId)
+    )));
     app.post('/api/activity-center/yishuhuanfu/seed/claim', withAccount((accountId: string) => ctx.provider.claimYishuHuanfuSeeds(accountId)));
     // 查铺子行情（cmd 92，只读）：不传 friendGid 查自己铺子。
     app.get('/api/activity-center/yishuhuanfu/shop', withAccount((accountId: string, req: Request) => (
